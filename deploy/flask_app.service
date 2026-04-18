@@ -1,0 +1,24 @@
+[Unit]
+Description=Gunicorn service for Flask API
+After=network.target
+
+[Service]
+User=ec2-user
+Group=ec2-user
+WorkingDirectory=/opt/flask_app
+Environment=AWS_REGION=us-east-2
+Environment=COGNITO_USER_POOL_ID=us-east-2_oce8grpSy
+Environment=COGNITO_APP_CLIENT_ID=6p5eeph209sasn3ua3fibvpugi
+Environment=COGNITO_APP_CLIENT_SECRET=replace_with_cognito_secret
+Environment=COGNITO_ADMIN_GROUP=admin
+Environment=DB_HOST=database-1.c2vy4cw82zdc.us-east-1.rds.amazonaws.com
+Environment=DB_PORT=3306
+Environment=DB_USER=admin
+Environment=DB_PASSWORD=replace_with_rds_password
+Environment=DB_NAME=cursos
+ExecStart=/opt/flask_app/.venv/bin/gunicorn --workers 3 --bind 127.0.0.1:8000 wsgi:app
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
