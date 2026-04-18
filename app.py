@@ -1,14 +1,12 @@
 from flask import Flask
 from flask import jsonify
 from flask import request
-from flask import g
 from flask_migrate import Migrate
+from flask_jwt_extended import JWTManager
+from flask_jwt_extended import verify_jwt_in_request
 from flask_cors import CORS
 from flask_restful import Api
 from flask_swagger_ui import get_swaggerui_blueprint
-import jwt
-from jwt import InvalidTokenError
-from jwt import PyJWKClient
 import os
 from models import db
 from models.categoria import Categoria
@@ -22,43 +20,14 @@ from controllers.seed_controller import SeedDemoResource
 # Crear aplicación Flask
 app = Flask(__name__)
 
-
-COGNITO_REGION = os.getenv('AWS_REGION', 'us-east-2')
-COGNITO_USER_POOL_ID = os.getenv('COGNITO_USER_POOL_ID', '')
-COGNITO_APP_CLIENT_ID = os.getenv('COGNITO_APP_CLIENT_ID', '')
-COGNITO_ADMIN_GROUP = os.getenv('COGNITO_ADMIN_GROUP', 'admin')
-COGNITO_ISSUER = f'https://cognito-idp.{COGNITO_REGION}.amazonaws.com/{COGNITO_USER_POOL_ID}' if COGNITO_USER_POOL_ID else ''
-COGNITO_JWKS_URL = f'{COGNITO_ISSUER}/.well-known/jwks.json' if COGNITO_ISSUER else ''
-COGNITO_JWK_CLIENT = PyJWKClient(COGNITO_JWKS_URL) if COGNITO_JWKS_URL else None
-
-
 PUBLIC_PATHS = {
     '/api/auth/login',
     '/api/auth/login/',
-    '/api/auth/refresh',
-    '/api/auth/refresh/',
     '/api/auth/register',
     '/api/auth/register/',
     '/api/swagger.json'
 }
 PUBLIC_PREFIXES = ('/docs',)
-
-REQUIRED_GROUPS_BY_PATH = {
-    '/api/seed/demo': {COGNITO_ADMIN_GROUP},
-    '/api/seed/demo/': {COGNITO_ADMIN_GROUP}
-}
-
-
-def has_required_group(path, claims):
-    required_groups = REQUIRED_GROUPS_BY_PATH.get(path)
-    if not required_groups:
-        return True
-
-    token_groups = claims.get('cognito:groups', [])
-    if isinstance(token_groups, str):
-        token_groups = [token_groups]
-
-    return any(group in required_groups for group in token_groups)
 
 
 @app.before_request
@@ -73,45 +42,7 @@ def require_jwt_for_protected_routes():
         return None
 
     if request.path.startswith('/api'):
-        if not COGNITO_USER_POOL_ID or not COGNITO_APP_CLIENT_ID:
-            return {'error': 'Faltan variables COGNITO_USER_POOL_ID y/o COGNITO_APP_CLIENT_ID'}, 500
-
-        auth_header = request.headers.get('Authorization', '')
-        if not auth_header.startswith('Bearer '):
-            return {'error': 'Missing Authorization Header'}, 401
-
-        token = auth_header.replace('Bearer ', '', 1).strip()
-        if not token:
-            return {'error': 'Missing Authorization Header'}, 401
-
-        try:
-            signing_key = COGNITO_JWK_CLIENT.get_signing_key_from_jwt(token)
-            claims = jwt.decode(
-                token,
-                signing_key.key,
-                algorithms=['RS256'],
-                issuer=COGNITO_ISSUER,
-                options={'verify_aud': False}
-            )
-
-            token_use = claims.get('token_use')
-            if token_use == 'id':
-                if claims.get('aud') != COGNITO_APP_CLIENT_ID:
-                    return {'error': 'Token invalido para este cliente'}, 401
-            elif token_use == 'access':
-                if claims.get('client_id') != COGNITO_APP_CLIENT_ID:
-                    return {'error': 'Token invalido para este cliente'}, 401
-            else:
-                return {'error': 'Token invalido'}, 401
-
-            g.cognito_claims = claims
-
-            if not has_required_group(request.path, claims):
-                return {'error': 'No autorizado para este recurso'}, 403
-        except InvalidTokenError:
-            return {'error': 'Token invalido'}, 401
-        except Exception:
-            return {'error': 'Error validando token'}, 401
+        verify_jwt_in_request()
 
     return None
 
@@ -144,14 +75,40 @@ if not db_uri:
 
 app.config['SQLALCHEMY_DATABASE_URI'] = db_uri
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'cambia-esto-en-produccion')
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = int(os.getenv('JWT_ACCESS_TOKEN_EXPIRES', '3600'))
 
 # Inicializar SQLAlchemy
 db.init_app(app)
 migrate = Migrate(app, db)
+jwt = JWTManager(app)
 CORS(app)
 
+
+@jwt.unauthorized_loader
+def unauthorized_response(reason):
+    return {'error': reason}, 401
+
+
+@jwt.invalid_token_loader
+def invalid_token_response(reason):
+    return {'error': reason}, 401
+
+
+@jwt.expired_token_loader
+def expired_token_response(jwt_header, jwt_payload):
+    return {'error': 'Token expirado'}, 401
+
 api_errors = {
-    'Unauthorized': {
+    'NoAuthorizationError': {
+        'message': 'Missing Authorization Header',
+        'status': 401
+    },
+    'InvalidHeaderError': {
+        'message': 'Authorization header invalido',
+        'status': 401
+    },
+    'JWTDecodeError': {
         'message': 'Token invalido',
         'status': 401
     }
